@@ -103,6 +103,8 @@ from functools import reduce
 # this might be useful in the `extract` function (more information there)
 from itertools import product
 
+import operator
+
 
 def size(shape, axis=None):
     """
@@ -131,12 +133,7 @@ def size(shape, axis=None):
     >>> size(shape, axis=1)
     3
     """
-    if axis != None:
-        return shape[axis]
-    num_pts = 1 #Start a 1 for multiplication later on 
-    for length in shape:
-        num_pts *= length
-    return num_pts
+    return shape[axis] if axis != None else reduce(operator.mul, shape)
 
 
 def ndim(shape):
@@ -189,10 +186,7 @@ def reshape(data, newshape):
     >>> reshape(range(8), (8,))
     (8,)
     """
-    num_elements = len(data)
-    if num_elements != size(newshape):
-        return None 
-    return newshape
+    return newshape if len(data) == size(newshape) else None
 
 
 def is_valid_index(shape, index):
@@ -219,12 +213,7 @@ def is_valid_index(shape, index):
     >>> is_valid_index((2,2), (1,1))
     True
     """
-    if len(shape) != len(index):
-        return False
-    for i in range(len(shape)):
-        if shape[i] < index[i]:
-            return False 
-    return True
+    return all([shape[i] >= index[i] for i in range(len(shape))])
 
 
 def get_increment(shape):
@@ -263,11 +252,10 @@ def get_increment(shape):
     >>> get_increment((2, 4, 3))
     [12, 3, 1]
     """
-    if len(shape) == 1:
-        return [1]
-    num_elements = size(shape)
-    curr_move = num_elements // shape[0] #To pass tests since int not float 
-    return [curr_move] + get_increment(shape[1:]) 
+    increments = [1]
+    for i in range(1,len(shape))[::-1]:
+        increments = [shape[i] * increments[0]] + increments
+    return increments
 
 
 def get_position(shape, index):
@@ -312,9 +300,8 @@ def get_position(shape, index):
     >>> get_position(shape, (1, 1))
     3
     """
-    assert is_valid_index(shape, index)
-    incr = get_increment(shape)
-    return sum(map(lambda x, y: x * y, incr, index)) #Dot product 
+    inc = get_increment(shape)
+    return sum([inc[i]*index[i] for i in range(len(index))])
 
 
 def get_index(shape, position):
@@ -358,12 +345,12 @@ def get_index(shape, position):
     (0, 2, 1, 0, 2)
     """
     assert position < size(shape)
-    if len(shape) == 1:
-        return (position,)
-    incr = get_increment(shape)
-    curr_group = position // incr[0]
-    next_position = position - (incr[0] * curr_group)
-    return (curr_group,) + get_index(shape[1:], next_position)
+    inds = []
+    incs = get_increment(shape)
+    for i in range(len(shape)):
+        inds.append(position // incs[i])
+        position = position % incs[i]
+    return tuple(inds)
 
 
 def get_item(data, shape, index):
@@ -401,8 +388,7 @@ def get_item(data, shape, index):
     >>> get_item(data, shape, (1, 0, 1))
     5
     """
-    position = get_position(shape, index)
-    return data[position]
+    return data[get_position(shape, index)]
 
 
 def nonzero(data, shape):
@@ -434,26 +420,20 @@ def nonzero(data, shape):
     [1, 2, 3, 4, 5, 6, 7]
     >>> d = [n % 2 for n in data]
     >>> shape = reshape(d, (2, 4))
+    >>> print(shape)
+    (2, 4)
     >>> nonzero(d, shape)
     ((0, 0, 1, 1), (1, 3, 1, 3))
     >>> [get_item(data, shape, index) for index in zip(*nonzero(d, shape))]
     [1, 3, 5, 7]
     """
-    all_indices = ()
-    for k, val in enumerate(data):
-        if val != 0:
-            index_k = get_index(shape, k)
-            all_indices += (index_k,)
-
-    #The following is just transposing 'all_indices' to match tests
-    all_indices_transposed = ()
-    for i in range(len(all_indices[0])):
-        temp = ()
-        for tup in all_indices:
-            temp += (tup[i],)
-        all_indices_transposed += ((temp, )) 
-    return all_indices_transposed
-
+    indices = [get_index(shape, i) for i in range(len(data)) if data[i] != 0]
+    if not indices:
+        return tuple()
+    a = []
+    for i in range(ndim(shape)):
+        a.append(tuple([ind[i] for ind in indices]))
+    return tuple(a)
 
 def extract(data, shape, axis, element):
     """
@@ -536,18 +516,10 @@ def extract(data, shape, axis, element):
     >>> s
     (2, 4)
     """
-    #Axis tells me where in my tuple I should put the (element,)
-    temp_prod = []
-    for elem in shape:
-        temp_prod.append(range(elem))
-    temp_prod[axis] = (element,)
-    indices = list(product(*temp_prod))
-    newdata = []  
-    for index in indices:
-        newdata.append(get_item(data, shape, index))
-    new_shape = list(shape)
-    new_shape.pop(axis)
-    return (newdata, tuple(new_shape))
+    f = lambda i: tuple(range(shape[i])) if i != axis else tuple([element])
+    s = tuple(list(shape[:axis])+list(shape[axis+1:]))
+    x = product(*[f(i) for i in range(ndim(shape))])
+    return [data[get_position(shape, i)] for i in product(*[f(i) for i in range(ndim(shape))])], s
 
 
 # Reduction operations
@@ -576,19 +548,12 @@ def asum(data, shape, axis=None):
     >>> asum(data, shape, 1)
     ([24, 28, 32, 36, 88, 92, 96, 100], (2, 4))
     """
-    if axis == None:
-        return (sum(data), ())
-
-    arrays_list = []
-    for element in range(shape[axis]):
-        new_data, new_shape = extract(data, shape, axis, element)
-        arrays_list.append(new_data)
-    
-    sums = arrays_list[0]
-    for sub_array in arrays_list[1:]:
-        for i, val in enumerate(sub_array):
-            sums[i] += val 
-    return (sums, new_shape) #FIX new_shape NOT SURE IF correct 
+    def g():
+        l = [extract(data, shape, axis, j)[0] for j in range(shape[axis])]
+        return [sum(x) for x in zip(*l)]
+    d = g() if axis != None else sum(data)
+    s = tuple(list(shape[:axis])+list(shape[axis+1:])) if axis != None else ()
+    return d, s
 
 
 def mean(data, shape, axis=None):
@@ -621,16 +586,9 @@ def mean(data, shape, axis=None):
     >>> mean(data, shape, 2)
     ([1.5, 5.5, 9.5, 13.5, 17.5, 21.5, 25.5, 29.5], (2, 4))
     """
-    if axis == None: 
-        total, _ = asum(data, shape, axis)
-        n = size(shape)
-        return (total / n, ()) 
-    all_sums, new_shape = asum(data, shape, axis)
-    n = shape[axis]
-    means = []
-    for val in all_sums:
-        means.append(val / n) 
-    return (means, new_shape)
+    d = [i/shape[axis] for i in asum(data, shape, axis)[0]] if axis != None else asum(data, shape)[0]/size(shape)
+    s = tuple(list(shape[:axis])+list(shape[axis+1:])) if axis != None else ()
+    return d, s
 
 
 if __name__ == "__main__":
